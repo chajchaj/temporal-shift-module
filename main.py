@@ -3,6 +3,7 @@
 # Ji Lin*, Chuang Gan, Song Han
 # {jilin, songhan}@mit.edu, ganchuang@csail.mit.edu
 
+import sys
 import os
 import time
 import shutil
@@ -27,9 +28,14 @@ best_prec1 = 0
 def main():
     global args, best_prec1
     args = parser.parse_args()
+    print("args.gpus:",args.gpus,__file__,sys._getframe().f_lineno)
+    print("args.print_freq:",args.print_freq,"args.pretrain:",args.pretrain,__file__,sys._getframe().f_lineno)
 
+    #args.dataset: kinetics ,args.modality: RGB
+    print("args.dataset:",args.dataset,",args.modality:",args.modality,__file__,sys._getframe().f_lineno)
     num_class, args.train_list, args.val_list, args.root_path, prefix = dataset_config.return_dataset(args.dataset,
                                                                                                       args.modality)
+    print("args.root_path:",args.root_path,"args.train_list:",args.train_list,"args.val_list:",args.val_list,__file__,sys._getframe().f_lineno)
     full_arch_name = args.arch
     if args.shift:
         full_arch_name += '_shift{}_{}'.format(args.shift_div, args.shift_place)
@@ -48,6 +54,7 @@ def main():
         args.store_name += '_nl'
     if args.suffix is not None:
         args.store_name += '_{}'.format(args.suffix)
+    #TSM_ucf101_RGB_resnet50_shift8_blockres_avg_segment8_e25
     print('storing name: ' + args.store_name)
 
     check_rootfolders()
@@ -71,6 +78,7 @@ def main():
     policies = model.get_optim_policies()
     train_augmentation = model.get_augmentation(flip=False if 'something' in args.dataset or 'jester' in args.dataset else True)
 
+    #ofical doc: Parameters device_ids (list of python:int or torch.device) – CUDA devices (default: all devices)
     model = torch.nn.DataParallel(model, device_ids=args.gpus).cuda()
 
     optimizer = torch.optim.SGD(policies,
@@ -138,6 +146,7 @@ def main():
     elif args.modality in ['Flow', 'RGBDiff']:
         data_length = 5
 
+    print("args.root_path:",args.root_path,"args.train_list:",args.train_list,"args.val_list:",args.val_list,__file__,sys._getframe().f_lineno)
     train_loader = torch.utils.data.DataLoader(
         TSNDataSet(args.root_path, args.train_list, num_segments=args.num_segments,
                    new_length=data_length,
@@ -235,13 +244,16 @@ def train(train_loader, model, criterion, optimizer, epoch, log, tf_writer):
     for i, (input, target) in enumerate(train_loader):
         # measure data loading time
         data_time.update(time.time() - end)
+        t1 = time.time()
 
         target = target.cuda()
         input_var = torch.autograd.Variable(input)
         target_var = torch.autograd.Variable(target)
 
+        t2 = time.time()
         # compute output
         output = model(input_var)
+        t3 = time.time()
         loss = criterion(output, target_var)
 
         # measure accuracy and record loss
@@ -252,16 +264,18 @@ def train(train_loader, model, criterion, optimizer, epoch, log, tf_writer):
 
         # compute gradient and do SGD step
         loss.backward()
+        t4 = time.time()
 
         if args.clip_gradient is not None:
             total_norm = clip_grad_norm_(model.parameters(), args.clip_gradient)
 
+        t45 = time.time()
         optimizer.step()
         optimizer.zero_grad()
+        t5 = time.time()
 
         # measure elapsed time
         batch_time.update(time.time() - end)
-        end = time.time()
 
         if i % args.print_freq == 0:
             output = ('Epoch: [{0}][{1}/{2}], lr: {lr:.5f}\t'
@@ -269,12 +283,16 @@ def train(train_loader, model, criterion, optimizer, epoch, log, tf_writer):
                       'Data {data_time.val:.3f} ({data_time.avg:.3f})\t'
                       'Loss {loss.val:.4f} ({loss.avg:.4f})\t'
                       'Prec@1 {top1.val:.3f} ({top1.avg:.3f})\t'
-                      'Prec@5 {top5.val:.3f} ({top5.avg:.3f})'.format(
+                      'Prec@5 {top5.val:.3f} ({top5.avg:.3f})\t'
+                      'forward_cost: {forw_t:.5f} s, backward_cost: {back_t:.5f} s, minimize_cost: {mini_t:.5f} s, clip_grad_norm_cost: {clip_t:.5f} s\t'
+                      'to_variable_cost: {tova_t:.5f} s, batch_cost: {batc_t:.5f} s, reader_cost: {read_t:.5f} s'.format(
                 epoch, i, len(train_loader), batch_time=batch_time,
-                data_time=data_time, loss=losses, top1=top1, top5=top5, lr=optimizer.param_groups[-1]['lr'] * 0.1))  # TODO
+                data_time=data_time, loss=losses, top1=top1, top5=top5, lr=optimizer.param_groups[-1]['lr'] * 0.1,
+                forw_t=t3-t2, back_t=t4-t3, mini_t=t5-t4, clip_t=t45-t4, tova_t=t2-t1, batc_t=t5-end, read_t=t2-end))  # TODO
             print(output)
             log.write(output + '\n')
             log.flush()
+        end = time.time()
 
     tf_writer.add_scalar('loss/train', losses.avg, epoch)
     tf_writer.add_scalar('acc/train_top1', top1.avg, epoch)
